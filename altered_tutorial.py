@@ -1,5 +1,4 @@
 # imports
-
 import sys
 from mpi4py import MPI
 import numpy as np
@@ -11,7 +10,6 @@ from dolfinx.mesh import CellType, create_rectangle, exterior_facet_indices, loc
 
 try:
     import pyvista
-
     have_pyvista = True
 except ModuleNotFoundError:
     print("pyvista and pyvistaqt are required to visualise the solution")
@@ -23,23 +21,17 @@ except ModuleNotFoundError:
     print("slepc4py is required for this demo")
     sys.exit(0)
 
-# geometry
+# geometry (all lengths in nanometers)
 
-l0 = 1550  # free space wavelength
+l0 = 1550  # free space wavelength in nm
 
-w_si=400
-h_si=220
+w_si = 400    # core width (nm)
+h_si = 220    # core height (nm)
 
-w_clad=3040
-h_clad=w_clad
+w_clad = 3040  # overall domain width (nm)
+h_clad = w_clad  # overall domain height (nm)
 
-'''w_pml=(w_clad+80)
-h_pml=w_pml'''
-
-#w_void=(2*l0+300)
-#h_void=w_void
-
-nx = 300
+nx = 500
 ny = nx
 
 msh = create_rectangle(
@@ -47,100 +39,80 @@ msh = create_rectangle(
 )
 msh.topology.create_connectivity(msh.topology.dim - 1, msh.topology.dim)
 
-# Visualize Mesh
-plotter = pyvista.Plotter(shape=(1, 4)) # create plotter
+# Set up a Pyvista plotter with 1 row and 4 columns
+plotnum = 2
+plotter = pyvista.Plotter(shape=(2, plotnum + 1))
+showvectorplot = False
+
+# ----------------------------------------
+# Subplot (0,0): Mesh Geometry
+# ----------------------------------------
 cells, cell_types, points = plot.vtk_mesh(msh)
-grid = pyvista.UnstructuredGrid(cells, cell_types, points) # Create a Pyvista UnstructuredGrid
-plotter.subplot(0,0)
-plotter.add_mesh(grid, color="lightgray", opacity=0.3, show_edges=True)# Add the grid with visible mesh edges
-plotter.view_xy()  # set the view to the xy-plane
+grid = pyvista.UnstructuredGrid(cells, cell_types, points)
+plotter.subplot(0, 0)
+plotter.add_mesh(grid, color="lightgray", opacity=0.3, show_edges=True)
+# Add text annotation with domain dimensions (all values in nm)
+mesh_info = (
+    "Mesh Geometry\n"
+    f"Domain: 0 - {w_clad} nm (x) × 0 - {h_clad} nm (y)\n"
+    f"Core: Center = ({w_clad/2:.0f}, {h_clad/2:.0f}) nm, Size = {w_si} nm × {h_si} nm"
+)
+plotter.add_text(mesh_info, font_size=10)
+plotter.view_xy()
 
-eps_d = 3.48    # dielectric permittivity
-eps_c = 1.44    # cladding permittivity
-'''eps_p = 1 + 1j # complex permittivity in PML
-eps_v = 1'''
-
-# Center coordinate
+# ----------------------------------------
+# eps Field: Dielectric Permittivity
+# ----------------------------------------
+eps_d = 3.48    # core permittivity (unitless)
+eps_c = 1.44    # cladding permittivity (unitless)
+# Center coordinate for core
 ctr = w_clad / 2.0
 
 def Omega_d(x):
-    in_core = (
-        (x[0] >= ctr - w_si/2) & (x[0] <= ctr + w_si/2) &
-        (x[1] >= ctr - h_si/2) & (x[1] <= ctr + h_si/2)
-    )
-    return in_core
+    # Core region: centered at (ctr, ctr)
+    return ((x[0] >= ctr - w_si/2) & (x[0] <= ctr + w_si/2) &
+            (x[1] >= ctr - h_si/2) & (x[1] <= ctr + h_si/2))
 
 def Omega_c(x):
-    in_cladding = (
-        (x[0] >= ctr - w_clad/2) & (x[0] <= ctr + w_clad/2) &
-        (x[1] >= ctr - h_clad/2) & (x[1] <= ctr + h_clad/2)
-    )
+    in_cladding = ((x[0] >= ctr - w_clad/2) & (x[0] <= ctr + w_clad/2) &
+                   (x[1] >= ctr - h_clad/2) & (x[1] <= ctr + h_clad/2))
     return in_cladding & (~Omega_d(x))
 
-'''def Omega_p(x):
-    in_pml = (
-        (x[0] >= ctr - w_pml/2) & (x[0] <= ctr + w_pml/2) &
-        (x[1] >= ctr - h_pml/2) & (x[1] <= ctr + h_pml/2)
-    )
-    # Vacuum region is the big square minus the dielectric
-    return in_pml & (~Omega_d(x)) & (~Omega_c(x))
-
-def Omega_v(x):
-    return (~Omega_d(x)) & (~Omega_c(x)) & (~Omega_p(x))
-'''
-
 def eps_expr(x):
-    # Define conditions
-    cond_d = Omega_d(x)
-    # cond_c = Omega_c(x)
-    # cond_p = Omega_p(x)
-    # cond_v = Omega_v(x)
-    
-    # Use np.where to assign values based on conditions
-    # Priority: Omega_d > Omega_c > Omega_p > Omega_v
-    # Ensure that regions do not overlap ambiguously
-    # In this recursive method, the third value is supposed to be the value where the second argument is not. In trying to find this third value, np.where is called again, to return different values based on where you are in looping through the np.array
-    return np.where(cond_d, eps_d, eps_c)
+    # Return eps_d in the core, eps_c elsewhere
+    return np.where(Omega_d(x), eps_d, eps_c)
 
-#D = fem.functionspace(msh, ("DQ", 0))
+# Define a CG1 function space and interpolate eps
 D = fem.functionspace(msh, ("CG", 1))
 eps = fem.Function(D)
 eps.interpolate(eps_expr)
 
-# Visualise Eps
-# Get the mesh data as before
+# Create a new grid for eps display
 cells, cell_types, points = plot.vtk_mesh(msh)
-grid = pyvista.UnstructuredGrid(cells, cell_types, points)
+grid_eps = pyvista.UnstructuredGrid(cells, cell_types, points)
+# For CG1 the dof values are associated with vertices
+eps_values = eps.x.array
+grid_eps.point_data["eps"] = np.real(eps_values)
 
-# eps.x.array contains the values of eps at the dofs.
-# (For a CG1 space, these are typically associated with mesh vertices.)
-eps_values = eps.x.array  # if these are complex, you may want the real part
-
-# Add eps as point data; if eps is complex, take the real part
-grid.point_data["eps"] = np.real(eps_values)
-
-# Now visualize the grid colored by eps
-plotter.subplot(0,1)
-plotter.add_mesh(grid, scalars="eps", cmap="viridis", show_edges=False)
+plotter.subplot(1, 0)
+plotter.add_mesh(
+    grid_eps, scalars="eps", cmap="viridis", show_edges=False,
+    scalar_bar_args={"title": "Dielectric Permittivity\n(unitless)"}
+)
+plotter.add_text("Dielectric Permittivity Field\n(Core: 3.48, Cladding: 1.44)", font_size=10)
 plotter.view_xy()
 
-"""cells_p = locate_entities(msh, msh.topology.dim, Omega_p)
-cells_v = locate_entities(msh, msh.topology.dim, Omega_v)
-cells_d = locate_entities(msh, msh.topology.dim, Omega_d)
-
-eps.x.array[cells_p] = np.full_like(cells_p, eps_p, dtype=default_scalar_type)
-eps.x.array[cells_v] = np.full_like(cells_v, eps_v, dtype=default_scalar_type)
-eps.x.array[cells_d] = np.full_like(cells_d, eps_d, dtype=default_scalar_type)"""
-
-# definition
-
+# ----------------------------------------
+# Problem Definition and Eigenmode Computation
+# ----------------------------------------
 degree = 1
 NED = element("Nedelec 1st kind H(curl)", msh.basix_cell(), degree)
 Q = element("Lagrange", msh.basix_cell(), degree)
 V = fem.functionspace(msh, mixed_element([NED, Q]))
 
-lmbd0 = l0 # If this value is too large, you might not have supported modes!
-k0 = 2 * np.pi / lmbd0
+lmbd0 = l0  # in nm
+k0 = 2 * np.pi / lmbd0  # in 1/nm
+
 et, ez = ufl.TrialFunctions(V)
 vt, vz = ufl.TestFunctions(V)
 
@@ -153,81 +125,44 @@ b_zz = (ufl.inner(ufl.grad(ez), ufl.grad(vz)) - (k0**2) * eps * ufl.inner(ez, vz
 a = fem.form(a_tt)
 b = fem.form(b_tt + b_tz + b_zt + b_zz)
 
-'''bc_facets = exterior_facet_indices(msh.topology)
-bc_dofs = fem.locate_dofs_topological(V, msh.topology.dim - 1, bc_facets)
-u_bc = fem.Function(V)
-with u_bc.x.petsc_vec.localForm() as loc:
-    loc.set(0)
-bc = fem.dirichletbc(u_bc, bc_dofs)
-
-# solving with SLEPc
-
-A = assemble_matrix(a, bcs=[bc])
-A.assemble()
-B = assemble_matrix(b, bcs=[bc])
-B.assemble()'''
-
 A = assemble_matrix(a)
 A.assemble()
 B = assemble_matrix(b)
 B.assemble()
 
-eps = SLEPc.EPS().create(msh.comm)
-
-eps.setOperators(A, B)
-
-eps.setProblemType(SLEPc.EPS.ProblemType.GNHEP)
-
+eps_eigensolver = SLEPc.EPS().create(msh.comm)
+eps_eigensolver.setOperators(A, B)
+eps_eigensolver.setProblemType(SLEPc.EPS.ProblemType.GNHEP)
 tol = 1e-9
-eps.setTolerances(tol=tol)
-
-eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
-
-# Get ST context from eps
-st = eps.getST()
-
-# Set shift-and-invert transformation
+eps_eigensolver.setTolerances(tol=tol)
+eps_eigensolver.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
+st = eps_eigensolver.getST()
 st.setType(SLEPc.ST.Type.SINVERT)
+eps_eigensolver.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_REAL)
+eps_eigensolver.setTarget(-((0.5 * k0) ** 2))
+eps_eigensolver.setDimensions(nev=plotnum)
+eps_eigensolver.solve()
+eps_eigensolver.view()
+eps_eigensolver.errorView()
 
-eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_REAL)
-
-eps.setTarget(-((0.5*k0) ** 2))
-
-eps.setDimensions(nev=2)
-
-eps.solve()
-eps.view()
-eps.errorView()
-
-# Save the kz
-vals = [(i, np.sqrt(-eps.getEigenvalue(i))) for i in range(eps.getConverged())]
-
-# Sort kz by real part
+vals = [(i, np.sqrt(-eps_eigensolver.getEigenvalue(i))) for i in range(eps_eigensolver.getConverged())]
 vals.sort(key=lambda x: x[1].real)
-
 eh = fem.Function(V)
-
 kz_list = []
 
+# ----------------------------------------
+# Eigenmode Visualization: Transverse Electric Field (Et)
+# ----------------------------------------
 for i, kz in vals:
-    # Save eigenvector in eh
-    eps.getEigenpair(i, eh.x.petsc_vec)
-
-    # Compute error for i-th eigenvalue
-    error = eps.computeError(i, SLEPc.EPS.ErrorType.RELATIVE)
-
-    # Verify, save and visualize solution
-    if error < tol and np.isclose(kz.imag, 0, atol=tol): # This chooses the eigenvalues which are close to zero
+    eps_eigensolver.getEigenpair(i, eh.x.petsc_vec)
+    error = eps_eigensolver.computeError(i, SLEPc.EPS.ErrorType.RELATIVE)
+    if error < tol and np.isclose(kz.imag, 0, atol=tol):
         kz_list.append(kz)
-
-        # I deleted the assert statement which checks against the analytical solutions.
-
         print(f"eigenvalue: {-kz**2}")
         print(f"kz: {kz}")
         print(f"kz/k0: {kz / k0}")
 
         eh.x.scatter_forward()
-
         eth, ezh = eh.split()
         eth = eh.sub(0).collapse()
         ez = eh.sub(1).collapse()
@@ -241,46 +176,59 @@ for i, kz in vals:
         Et_dg = fem.Function(V_dg)
         Et_dg.interpolate(eth)
 
-        # Save solutions
+        # Save solutions (if needed)
         with io.VTXWriter(msh.comm, f"sols/Et_{i}.bp", Et_dg) as f:
             f.write(0.0)
-
         with io.VTXWriter(msh.comm, f"sols/Ez_{i}.bp", ezh) as f:
             f.write(0.0)
 
-        # Visualize solutions with Pyvista
         if have_pyvista:
             V_cells, V_types, V_x = plot.vtk_mesh(V_dg)
             V_grid = pyvista.UnstructuredGrid(V_cells, V_types, V_x)
             Et_values = np.zeros((V_x.shape[0], 3), dtype=np.float64)
-            Et_values[:, : msh.topology.dim] = Et_dg.x.array.reshape(
-                V_x.shape[0], msh.topology.dim
-            ).real
-
+            Et_values[:, :msh.topology.dim] = Et_dg.x.array.reshape(V_x.shape[0], msh.topology.dim).real
             V_grid.point_data["u"] = Et_values
 
-            plotter.subplot(0,2+i)
+            # Place each eigenmode in its own subplot (starting at column 2)
+            plotter.subplot(0, 1 + i)
             plotter.add_mesh(V_grid.copy(), show_edges=False)
+            # Annotate the eigenmode display. Here we assume Et is a transverse electric field,
+            # and we note that its values are scaled (hence “arb. units”).
+            plotter.add_text(f"Eigenmode {i}\nTransverse Electric Field (Et)\n[arb. units]", font_size=10)
             plotter.view_xy()
             plotter.link_views()
-            '''if not pyvista.OFF_SCREEN:
-                plotter.show()
-            else:
-                pyvista.start_xvfb()
-                plotter.screenshot("Et.png", window_size=[400, 400])'''
-plotter.show()
+        
+        if have_pyvista and showvectorplot:
+            # Create a Pyvista grid for the DG field of Et
+            V_cells, V_types, V_x = plot.vtk_mesh(V_dg)
+            V_grid = pyvista.UnstructuredGrid(V_cells, V_types, V_x)
+            
+            # Set the point data to be the vector field (here we assume real values are sufficient)
+            Et_values = np.zeros((V_x.shape[0], 3), dtype=np.float64)
+            Et_values[:, :msh.topology.dim] = Et_dg.x.array.reshape(V_x.shape[0], msh.topology.dim).real
+            V_grid.point_data["u"] = Et_values
+            
+            # Debug: print the magnitude stats of the vector field
+            norms = np.linalg.norm(Et_values, axis=1)
+            print("Min, max, mean of Et vector magnitudes:", norms.min(), norms.max(), norms.mean())
+            
+            # Use the glyph filter to display arrow glyphs representing the field vectors.
+            # Increase 'factor' to make the arrows visible
+            all_indices = np.arange(V_grid.n_points)
+            # This gives the indices we originally extracted (every 10th point)
+            extracted = np.arange(0, V_grid.n_points, 10)
+            # Inverse: all indices *not* in the extracted set
+            inverse_indices = np.setdiff1d(all_indices, extracted)
+            inverse_grid = V_grid.extract_points(inverse_indices)
 
-'''if have_pyvista:
-    V_lagr, lagr_dofs = V.sub(1).collapse()
-    V_cells, V_types, V_x = plot.vtk_mesh(V_lagr)
-    V_grid = pyvista.UnstructuredGrid(V_cells, V_types, V_x)
-    V_grid.point_data["u"] = ezh.x.array.real[lagr_dofs]
-    plotter = pyvista.Plotter()
-    plotter.add_mesh(V_grid.copy(), show_edges=False)
-    plotter.view_xy()
-    plotter.link_views()
-    if not pyvista.OFF_SCREEN:
-        plotter.show()
-    else:
-        pyvista.start_xvfb()
-        plotter.screenshot("Ez.png", window_size=[400, 400])'''
+            arrow_glyphs = inverse_grid.glyph(orient="u", scale="u", factor=10000)
+            
+            # Place in its subplot (for instance, row 1, column 1+i)
+            plotter.subplot(1, 1 + i)
+            plotter.add_mesh(arrow_glyphs, color="red")
+            plotter.add_text(f"Eigenmode {i}\nTransverse Electric Field (Et)\nDisplayed as Arrows", font_size=10)
+            plotter.view_xy()
+            plotter.link_views()
+
+# Finally, display all subplots in one window.
+plotter.show()
