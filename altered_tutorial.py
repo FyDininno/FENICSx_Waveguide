@@ -28,20 +28,22 @@ l0 = 1550  # free space wavelength in nm
 w_si = 400    # core width (nm)
 h_si = 220    # core height (nm)
 
-w_clad = 3040  # overall domain width (nm)
+w_clad = 2940  # overall domain width (nm)
 h_clad = w_clad  # overall domain height (nm)
 
-nx = 500
+w_dom = w_clad + 100
+h_dom = h_clad + 100
+
+nx = 300
 ny = nx
 
 msh = create_rectangle(
-    MPI.COMM_WORLD, np.array([[0, 0], [w_clad, h_clad]]), np.array([nx, ny]), CellType.triangle
+    MPI.COMM_WORLD, np.array([[0, 0], [w_dom, h_dom]]), np.array([nx, ny]), CellType.triangle
 )
 msh.topology.create_connectivity(msh.topology.dim - 1, msh.topology.dim)
 
 # Set up a Pyvista plotter with 1 row and 4 columns
-plotnum = 2
-plotter = pyvista.Plotter(shape=(2, plotnum + 1))
+plotter = pyvista.Plotter(shape=(2, 2))
 showvectorplot = False
 
 # ----------------------------------------
@@ -65,8 +67,9 @@ plotter.view_xy()
 # ----------------------------------------
 eps_d = 3.48    # core permittivity (unitless)
 eps_c = 1.44    # cladding permittivity (unitless)
+eps_p = 1.44 + 0.01j
 # Center coordinate for core
-ctr = w_clad / 2.0
+ctr = w_dom / 2.0
 
 def Omega_d(x):
     # Core region: centered at (ctr, ctr)
@@ -80,12 +83,24 @@ def Omega_c(x):
 
 def eps_expr(x):
     # Return eps_d in the core, eps_c elsewhere
-    return np.where(Omega_d(x), eps_d, eps_c)
+    return np.where(Omega_d(x), eps_d, 
+           np.where(Omega_c(x), eps_c, eps_p))
 
 # Define a CG1 function space and interpolate eps
 D = fem.functionspace(msh, ("CG", 1))
 eps = fem.Function(D)
 eps.interpolate(eps_expr)
+
+# Get the array of epsilon values at the vertices
+eps_values = eps.x.array
+
+# Print unique values (you should see values close to eps_d, eps_c, and eps_p)
+unique_vals = np.unique(eps_values)
+print("Unique epsilon values at vertices:", unique_vals)
+
+# Optionally, print min/max of the imaginary part to check for the PML
+print("Imaginary part: min =", np.min(np.imag(eps_values)),
+      "max =", np.max(np.imag(eps_values)))
 
 # Create a new grid for eps display
 cells, cell_types, points = plot.vtk_mesh(msh)
@@ -140,7 +155,7 @@ st = eps_eigensolver.getST()
 st.setType(SLEPc.ST.Type.SINVERT)
 eps_eigensolver.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_REAL)
 eps_eigensolver.setTarget(-((0.5 * k0) ** 2))
-eps_eigensolver.setDimensions(nev=plotnum)
+eps_eigensolver.setDimensions(nev=1)
 eps_eigensolver.solve()
 eps_eigensolver.view()
 eps_eigensolver.errorView()
@@ -190,7 +205,7 @@ for i, kz in vals:
             V_grid.point_data["u"] = Et_values
 
             # Place each eigenmode in its own subplot (starting at column 2)
-            plotter.subplot(0, 1 + i)
+            plotter.subplot(0, 1)
             plotter.add_mesh(V_grid.copy(), show_edges=False)
             # Annotate the eigenmode display. Here we assume Et is a transverse electric field,
             # and we note that its values are scaled (hence “arb. units”).
@@ -224,7 +239,7 @@ for i, kz in vals:
             arrow_glyphs = inverse_grid.glyph(orient="u", scale="u", factor=10000)
             
             # Place in its subplot (for instance, row 1, column 1+i)
-            plotter.subplot(1, 1 + i)
+            plotter.subplot(1, 1)
             plotter.add_mesh(arrow_glyphs, color="red")
             plotter.add_text(f"Eigenmode {i}\nTransverse Electric Field (Et)\nDisplayed as Arrows", font_size=10)
             plotter.view_xy()
